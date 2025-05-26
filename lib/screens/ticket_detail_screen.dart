@@ -8,7 +8,7 @@ import 'package:bus_ticket_scanner/models/ticket.dart';
 import 'package:bus_ticket_scanner/theme/app_theme.dart';
 import 'package:bus_ticket_scanner/providers/auth_provider.dart';
 
-enum TicketStatus { pending, valid, invalid, error }
+enum TicketStatus { pending, valid, invalid, error, alreadyAttended }
 
 class TicketDetailScreen extends StatefulWidget {
   final Ticket ticket;
@@ -32,10 +32,10 @@ class _TicketDetailScreenState extends State<TicketDetailScreen>
   bool _isValidating = false;
   String? _validationMessage;
   late AnimationController _animationController;
-  late Animation<double> _scaleAnimation;
   late Animation<double> _opacityAnimation;
   final Logger _logger = Logger();
   late final Dio _dio;
+  bool _alreadyValidated = false;
 
   @override
   void initState() {
@@ -50,11 +50,6 @@ class _TicketDetailScreenState extends State<TicketDetailScreen>
       duration: const Duration(milliseconds: 1500),
     );
 
-    _scaleAnimation = TweenSequence<double>([
-      TweenSequenceItem(tween: Tween(begin: 0.95, end: 1.05), weight: 50),
-      TweenSequenceItem(tween: Tween(begin: 1.05, end: 0.95), weight: 50),
-    ]).animate(_animationController);
-
     _opacityAnimation = Tween<double>(begin: 0.8, end: 1.0).animate(
       CurvedAnimation(
         parent: _animationController,
@@ -62,10 +57,12 @@ class _TicketDetailScreenState extends State<TicketDetailScreen>
       ),
     );
 
-    _animationController.repeat(reverse: true);
+    _animationController.forward();
 
     // Auto-validate if pending and no error message
-    if (_status == TicketStatus.pending && widget.errorMessage == null) {
+    if (_status == TicketStatus.pending &&
+        widget.errorMessage == null &&
+        !widget.ticket.isAttended) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _validateTicket();
       });
@@ -80,7 +77,7 @@ class _TicketDetailScreenState extends State<TicketDetailScreen>
   }
 
   Future<void> _validateTicket() async {
-    if (_isValidating) return;
+    if (_isValidating || _alreadyValidated) return;
 
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     if (authProvider.token == null) {
@@ -101,16 +98,10 @@ class _TicketDetailScreenState extends State<TicketDetailScreen>
     });
 
     try {
-      final bookingId = widget.ticket.bookingId;
-      print(
-          'Calling: https://n7gjzkm4-3001.euw.devtunnels.ms/api/bookings/$bookingId/mark/attended');
-
       final response = await _dio
           .put(
             'https://n7gjzkm4-3002.euw.devtunnels.ms/api/bookings/mark/attended',
-            data: {
-              'bookingId': bookingId,
-            },
+            data: {'bookingId': widget.ticket.bookingId},
             options: Options(
               headers: {
                 'Authorization': 'Bearer ${authProvider.token}',
@@ -123,18 +114,33 @@ class _TicketDetailScreenState extends State<TicketDetailScreen>
       _logger.i('Validation response: ${response.data}');
 
       setState(() {
-        _status = response.data['success'] == true
-            ? TicketStatus.valid
-            : TicketStatus.invalid;
-        _validationMessage = response.data['message'] ??
-            (_status == TicketStatus.valid ? 'Valid ticket' : 'Invalid ticket');
+        if (response.data['alreadyAttended'] == true) {
+          _status = TicketStatus.alreadyAttended;
+          _validationMessage = 'Already marked as attended';
+        } else {
+          _status = response.data['success'] == true
+              ? TicketStatus.valid
+              : TicketStatus.invalid;
+          _validationMessage = response.data['message'] ??
+              (_status == TicketStatus.valid
+                  ? 'Valid ticket'
+                  : 'Invalid ticket');
+        }
+        _alreadyValidated = true;
       });
     } on DioException catch (e) {
       _logger.e('Validation failed: ${e.message}',
           error: e, stackTrace: e.stackTrace);
       setState(() {
-        _status = TicketStatus.error;
-        _validationMessage = _handleDioError(e);
+        if (e.response?.statusCode == 409) {
+          // Conflict - already attended
+          _status = TicketStatus.alreadyAttended;
+          _validationMessage = 'Already marked as attended';
+          _alreadyValidated = true;
+        } else {
+          _status = TicketStatus.error;
+          _validationMessage = _handleDioError(e);
+        }
       });
     } catch (e) {
       _logger.e('Unexpected validation error: $e');
@@ -168,25 +174,31 @@ class _TicketDetailScreenState extends State<TicketDetailScreen>
         'color': Colors.green,
         'icon': Icons.verified,
         'animation': 'assets/animations/sucess.json',
-        'text': 'VALID TICKET',
+        'text': 'Valid Ticket',
       },
       TicketStatus.invalid: {
         'color': Colors.red,
         'icon': Icons.error_outline,
         'animation': 'assets/animations/error.json',
-        'text': 'INVALID TICKET',
+        'text': 'Invalid Ticket',
       },
       TicketStatus.error: {
         'color': Colors.orange,
         'icon': Icons.warning,
         'animation': 'assets/animations/warning.json',
-        'text': 'VALIDATION ERROR',
+        'text': 'Validation Error',
       },
       TicketStatus.pending: {
         'color': Colors.blue,
         'icon': Icons.pending,
         'animation': 'assets/animations/scanning.json',
-        'text': 'VALIDATING...',
+        'text': 'Validating...',
+      },
+      TicketStatus.alreadyAttended: {
+        'color': Colors.purple,
+        'icon': Icons.check_circle_outline,
+        'animation': 'assets/animations/success.json',
+        'text': 'Already Attended',
       },
     };
 
@@ -197,81 +209,60 @@ class _TicketDetailScreenState extends State<TicketDetailScreen>
 
     return FadeTransition(
       opacity: _opacityAnimation,
-      child: ScaleTransition(
-        scale: _scaleAnimation,
-        child: Container(
-          margin: const EdgeInsets.only(bottom: 24),
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: statusColor.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: statusColor.withOpacity(0.3),
-              width: 2,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: statusColor.withOpacity(0.05),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: statusColor.withOpacity(0.2)),
+        ),
+        child: Column(
+          children: [
+            SizedBox(
+              width: 80,
+              height: 80,
+              child: Lottie.asset(
+                animationAsset,
+                fit: BoxFit.contain,
+                repeat: false,
+              ),
             ),
-            boxShadow: [
-              BoxShadow(
-                color: statusColor.withOpacity(0.2),
-                blurRadius: 20,
-                spreadRadius: 2,
+            const SizedBox(height: 12),
+            Text(
+              _validationMessage ?? statusText,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: statusColor,
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
               ),
-            ],
-          ),
-          child: Column(
-            children: [
-              SizedBox(
-                width: 120,
-                height: 120,
-                child: Lottie.asset(
-                  animationAsset,
-                  fit: BoxFit.contain,
-                  repeat: _status == TicketStatus.pending,
-                ),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                _validationMessage ?? statusText,
-                style: TextStyle(
-                  color: statusColor,
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  shadows: [
-                    Shadow(
-                      blurRadius: 10,
-                      color: statusColor.withOpacity(0.2),
-                      offset: const Offset(0, 2),
+            ),
+            if (_status != TicketStatus.valid &&
+                _status != TicketStatus.alreadyAttended &&
+                !_isValidating)
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: ElevatedButton.icon(
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Verify Again'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: statusColor,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
                     ),
-                  ],
-                ),
-              ),
-              if (_status != TicketStatus.valid && !_isValidating)
-                Padding(
-                  padding: const EdgeInsets.only(top: 16),
-                  child: ElevatedButton.icon(
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Verify Again'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: statusColor,
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 20,
-                        vertical: 12,
-                      ),
-                    ),
-                    onPressed: _validateTicket,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 10),
                   ),
+                  onPressed: _alreadyValidated ? null : _validateTicket,
                 ),
-            ],
-          ),
+              ),
+          ],
         ),
       ),
     );
   }
-
-  // ... [Keep all other existing methods unchanged] ...
 
   @override
   Widget build(BuildContext context) {

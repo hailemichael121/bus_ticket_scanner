@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 import 'package:bus_ticket_scanner/providers/auth_provider.dart';
 import 'package:bus_ticket_scanner/theme/app_theme.dart';
 
@@ -16,6 +17,7 @@ class AuthScreenState extends State<AuthScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _isLoading = false;
+  bool _obscurePassword = true;
 
   @override
   Widget build(BuildContext context) {
@@ -31,7 +33,7 @@ class AuthScreenState extends State<AuthScreen> {
               width: 300,
               height: 300,
               decoration: BoxDecoration(
-                color: AppTheme.lightGray,
+                color: AppTheme.subtitleGray,
                 shape: BoxShape.circle,
               ),
             ),
@@ -43,6 +45,14 @@ class AuthScreenState extends State<AuthScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  Hero(
+                    tag: 'logo',
+                    child: Image.asset(
+                      'assets/logo.png',
+                      height: 100,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
                   const Text(
                     'Welcome Back',
                     style: TextStyle(
@@ -140,6 +150,7 @@ class AuthScreenState extends State<AuthScreen> {
                             const SizedBox(height: 16),
                             TextFormField(
                               controller: _passwordController,
+                              obscureText: _obscurePassword,
                               decoration: InputDecoration(
                                 labelText: 'Password',
                                 labelStyle: const TextStyle(
@@ -147,6 +158,19 @@ class AuthScreenState extends State<AuthScreen> {
                                 ),
                                 filled: true,
                                 fillColor: Colors.white,
+                                suffixIcon: IconButton(
+                                  icon: Icon(
+                                    _obscurePassword
+                                        ? Icons.visibility_off
+                                        : Icons.visibility,
+                                    color: AppTheme.subtitleGray,
+                                  ),
+                                  onPressed: () {
+                                    setState(() {
+                                      _obscurePassword = !_obscurePassword;
+                                    });
+                                  },
+                                ),
                                 border: OutlineInputBorder(
                                   borderRadius: BorderRadius.circular(8),
                                   borderSide: const BorderSide(
@@ -160,7 +184,6 @@ class AuthScreenState extends State<AuthScreen> {
                                 contentPadding: const EdgeInsets.symmetric(
                                     horizontal: 16, vertical: 14),
                               ),
-                              obscureText: true,
                               validator: (value) {
                                 if (value == null || value.isEmpty) {
                                   return 'Please enter your password';
@@ -207,7 +230,7 @@ class AuthScreenState extends State<AuthScreen> {
                               ),
                             ),
                           ],
-                        ),
+                        ).animate().fadeIn(duration: 500.ms).slideY(),
                       ),
                     ),
                   ),
@@ -222,9 +245,7 @@ class AuthScreenState extends State<AuthScreen> {
 
   Future<void> _submitForm() async {
     if (_formKey.currentState!.validate()) {
-      // Close keyboard
       SystemChannels.textInput.invokeMethod('TextInput.hide');
-
       setState(() => _isLoading = true);
 
       try {
@@ -235,7 +256,6 @@ class AuthScreenState extends State<AuthScreen> {
 
         if (!mounted) return;
 
-        // Show success message
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Login successful!'),
@@ -244,11 +264,11 @@ class AuthScreenState extends State<AuthScreen> {
           ),
         );
 
+        await Future.delayed(300.ms);
         Navigator.pushReplacementNamed(context, '/scanner');
       } catch (e) {
         if (!mounted) return;
 
-        // Show detailed error to user
         String userMessage;
         if (e.toString().contains('Network error')) {
           userMessage = 'No internet connection';
@@ -282,7 +302,6 @@ class AuthScreenState extends State<AuthScreen> {
           ),
         );
 
-        // Log detailed error for debugging
         debugPrint('Login error details: ${e.toString()}');
       } finally {
         if (mounted) setState(() => _isLoading = false);

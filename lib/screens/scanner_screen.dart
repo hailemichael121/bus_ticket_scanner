@@ -1,16 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:developer' as developer;
-import 'package:bus_ticket_scanner/models/ticket.dart';
-// import 'package:bus_ticket_scanner/providers/scanner_provider.dart';
-import 'package:bus_ticket_scanner/screens/ticket_detail_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:image_cropper/image_cropper.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:permission_handler/permission_handler.dart';
-// import 'package:provider/provider.dart';
+import 'package:logger/logger.dart';
+import 'package:dio/dio.dart';
+import 'package:bus_ticket_scanner/models/ticket.dart';
+import 'package:bus_ticket_scanner/screens/ticket_detail_screen.dart';
 
 class ScannerScreen extends StatefulWidget {
   const ScannerScreen({super.key});
@@ -21,82 +20,104 @@ class ScannerScreen extends StatefulWidget {
 
 class _ScannerScreenState extends State<ScannerScreen> {
   final MobileScannerController _controller = MobileScannerController(
-    detectionSpeed: DetectionSpeed.noDuplicates,
+    detectionSpeed: DetectionSpeed.normal, // Faster detection
     facing: CameraFacing.back,
     torchEnabled: false,
     formats: [BarcodeFormat.qrCode],
   );
 
+  final Logger _logger = Logger();
+  final Dio _dio = Dio();
   bool _isProcessing = false;
   bool _hasPermission = false;
-  bool _isDetecting = false;
-  Timer? _detectionTimer;
-  bool _showCaptureButton = false;
+  Timer? _scanCooldownTimer;
+  String? _lastScannedCode;
+  DateTime? _lastScanTime;
+  int _scanAttempts = 0;
 
   @override
   void initState() {
     super.initState();
-    developer.log('Scanner screen initialized', name: 'Scanner');
-    WidgetsBinding.instance.addPostFrameCallback((_) => _checkPermissions());
-    _startDetectionTimer();
+    _logger.i('Scanner screen initialized');
+    _checkPermissions();
+    _setupDio();
   }
 
-  void _startDetectionTimer() {
-    developer.log('Starting detection timer', name: 'Scanner');
-    _detectionTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
-      if (!_isDetecting && mounted) {
-        developer.log('No QR detected recently, showing capture button',
-            name: 'Scanner');
-        setState(() => _showCaptureButton = true);
-      }
-      _isDetecting = false;
-    });
+  void _setupDio() {
+    _dio.options = BaseOptions(
+      connectTimeout: const Duration(seconds: 5),
+      receiveTimeout: const Duration(seconds: 5),
+    );
+    _dio.interceptors.add(LogInterceptor(
+      request: true,
+      responseBody: true,
+      error: true,
+    ));
   }
 
   Future<void> _checkPermissions() async {
-    developer.log('Checking camera permissions', name: 'Scanner');
-    final cameraStatus = await Permission.camera.status;
-    final photosStatus = await Permission.photos.status;
-
-    if (!cameraStatus.isGranted || !photosStatus.isGranted) {
-      developer.log('Requesting camera permissions', name: 'Scanner');
-      final results = await [
-        Permission.camera,
-        Permission.photos,
-      ].request();
-
-      if (!mounted) return;
-      setState(() {
-        _hasPermission = results[Permission.camera]?.isGranted == true &&
-            results[Permission.photos]?.isGranted == true;
-      });
-      developer.log('Permission results: $_hasPermission', name: 'Scanner');
-    } else {
-      if (!mounted) return;
+    _logger.i('Checking camera permissions');
+    final status = await Permission.camera.request();
+    if (status.isGranted) {
+      _logger.i('Camera permission granted');
       setState(() => _hasPermission = true);
+    } else {
+      _logger.w('Camera permission denied');
+      setState(() => _hasPermission = false);
     }
   }
 
-  Future<void> _processQRCode(String rawValue) async {
-    if (_isProcessing || !mounted) return;
+  void _handleAutoDetect(BarcodeCapture capture) {
+    if (capture.barcodes.isEmpty || _isProcessing) return;
 
-    developer.log('Starting QR processing', name: 'Scanner');
+    final barcode = capture.barcodes.first;
+    final code = barcode.rawValue;
+
+    if (code == null || code == _lastScannedCode) {
+      _logger.d('Duplicate or empty QR code detected');
+      return;
+    }
+
+    // Prevent rapid successive scans
+    if (_lastScanTime != null &&
+        DateTime.now().difference(_lastScanTime!) <
+            const Duration(seconds: 1)) {
+      _logger.d('Too frequent scans - ignoring');
+      return;
+    }
+
+    _lastScannedCode = code;
+    _lastScanTime = DateTime.now();
+    _scanAttempts++;
+
+    _logger.i('Auto-detected QR code (attempt $_scanAttempts)');
+    _processQRCode(code);
+  }
+
+  Future<void> _processQRCode(String rawValue) async {
+    if (_isProcessing) {
+      _logger.d('Already processing a QR code - skipping');
+      return;
+    }
+
+    _logger.i('Starting QR processing');
     setState(() => _isProcessing = true);
 
     try {
-      developer.log('Raw QR data: $rawValue', name: 'Scanner');
+      _logger.d('Raw QR data: $rawValue');
 
       if (!rawValue.startsWith('{')) {
-        developer.log('Invalid QR format detected', name: 'Scanner');
         throw FormatException('Invalid QR format - does not contain JSON data');
       }
 
       final decoded = jsonDecode(rawValue);
-      developer.log('Successfully decoded QR data', name: 'Scanner');
+      _logger.d('Successfully decoded QR data');
 
       final ticket = Ticket.fromJson(decoded);
-      developer.log('Created ticket with ID: ${ticket.bookingId}',
-          name: 'Scanner');
+      _logger.i('Created ticket with ID: ${ticket.bookingId}');
+
+      // Start cooldown timer to prevent immediate re-scan
+      _startScanCooldown();
 
       if (!mounted) return;
       Navigator.push(
@@ -104,36 +125,51 @@ class _ScannerScreenState extends State<ScannerScreen> {
         MaterialPageRoute(
           builder: (_) => TicketDetailScreen(
             ticket: ticket,
-            initialStatus: TicketStatus.pending,
+            initialStatus: ticket.isAttended
+                ? TicketStatus.alreadyAttended
+                : TicketStatus.pending,
           ),
         ),
       );
 
-      developer.log('Navigated to ticket details', name: 'Scanner');
+      _logger.i('Navigated to ticket details');
+    } on FormatException catch (e) {
+      _logger.e('Invalid QR format', error: e);
+      _showToast('Invalid ticket format');
     } catch (e) {
-      developer.log('QR processing failed: $e', name: 'Scanner', error: e);
+      _logger.e('QR processing failed', error: e);
       _showToast('Failed to process QR code');
     } finally {
       if (mounted) {
         setState(() => _isProcessing = false);
       }
-      developer.log('QR processing completed', name: 'Scanner');
     }
   }
 
-  Future<void> _scanFromGallery() async {
-    if (_isProcessing) return;
-    developer.log('Starting gallery scan', name: 'Scanner');
+  void _startScanCooldown() {
+    _scanCooldownTimer?.cancel();
+    _scanCooldownTimer = Timer(const Duration(seconds: 2), () {
+      _lastScannedCode = null;
+      _logger.d('Scan cooldown ended - ready for new scans');
+    });
+  }
 
+  Future<void> _scanFromGallery() async {
+    if (_isProcessing) {
+      _showToast('Please wait for current scan to complete');
+      return;
+    }
+
+    _logger.i('Starting gallery scan');
     try {
       final picker = ImagePicker();
       final pickedFile = await picker.pickImage(source: ImageSource.gallery);
       if (pickedFile == null) {
-        developer.log('No image selected', name: 'Scanner');
+        _logger.d('No image selected');
         return;
       }
 
-      developer.log('Image selected from gallery', name: 'Scanner');
+      _logger.d('Image selected from gallery');
       final croppedFile = await ImageCropper().cropImage(
         sourcePath: pickedFile.path,
         aspectRatio: const CropAspectRatio(ratioX: 1, ratioY: 1),
@@ -153,19 +189,19 @@ class _ScannerScreenState extends State<ScannerScreen> {
       );
 
       if (croppedFile == null) {
-        developer.log('Image cropping cancelled', name: 'Scanner');
+        _logger.d('Image cropping cancelled');
         return;
       }
 
-      developer.log('Image cropped successfully', name: 'Scanner');
+      _logger.d('Image cropped successfully');
       final success = await _controller.analyzeImage(croppedFile.path);
       if (success) {
-        developer.log('Image analysis started', name: 'Scanner');
+        _logger.i('Image analysis started');
         await for (final capture in _controller.barcodes) {
           if (capture.barcodes.isNotEmpty) {
             final barcode = capture.barcodes.first;
             if (barcode.rawValue != null) {
-              developer.log('QR code found in image', name: 'Scanner');
+              _logger.i('QR code found in image');
               await _processQRCode(barcode.rawValue!);
               break;
             }
@@ -173,48 +209,14 @@ class _ScannerScreenState extends State<ScannerScreen> {
         }
       }
     } catch (e) {
-      developer.log('Gallery scan failed: $e', name: 'Scanner', error: e);
+      _logger.e('Gallery scan failed', error: e);
       _showToast('Error scanning image');
     }
   }
 
-  Future<void> _captureAndScan() async {
-    if (_isProcessing) return;
-    developer.log('Manual capture initiated', name: 'Scanner');
-
-    try {
-      setState(() => _isProcessing = true);
-      developer.log('Waiting for QR capture...', name: 'Scanner');
-
-      final BarcodeCapture capture = await _controller.barcodes.first;
-      developer.log('Capture received', name: 'Scanner');
-
-      if (capture.barcodes.isNotEmpty) {
-        final barcode = capture.barcodes.first;
-        if (barcode.rawValue != null) {
-          developer.log('QR code captured: ${barcode.rawValue}',
-              name: 'Scanner');
-          await _processQRCode(barcode.rawValue!);
-        } else {
-          developer.log('Captured QR has no data', name: 'Scanner');
-          _showToast('QR code has no data');
-        }
-      } else {
-        developer.log('No QR code found in capture', name: 'Scanner');
-        _showToast('No QR code found');
-      }
-    } catch (e) {
-      developer.log('Capture failed: $e', name: 'Scanner', error: e);
-      _showToast('Error capturing image');
-    } finally {
-      if (mounted) {
-        setState(() => _isProcessing = false);
-      }
-    }
-  }
-
   void _showToast(String message) {
-    developer.log('Showing toast: $message', name: 'Scanner');
+    _logger.d('Showing toast: $message');
+    Fluttertoast.cancel();
     Fluttertoast.showToast(
       msg: message,
       toastLength: Toast.LENGTH_SHORT,
@@ -226,9 +228,10 @@ class _ScannerScreenState extends State<ScannerScreen> {
 
   @override
   void dispose() {
-    developer.log('Scanner screen disposed', name: 'Scanner');
-    _detectionTimer?.cancel();
+    _logger.i('Scanner screen disposed');
+    _scanCooldownTimer?.cancel();
     _controller.dispose();
+    _dio.close();
     super.dispose();
   }
 
@@ -246,7 +249,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
                 const Icon(Icons.camera_alt, size: 64, color: Colors.grey),
                 const SizedBox(height: 20),
                 const Text(
-                  'Camera and storage permissions are required to scan tickets',
+                  'Camera permission is required to scan tickets',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 16),
                 ),
@@ -266,27 +269,17 @@ class _ScannerScreenState extends State<ScannerScreen> {
         ),
       );
     }
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('Scan Ticket'),
+        // Removed torch button from app bar
+        actions: [],
       ),
       body: Stack(
         children: [
           MobileScanner(
             controller: _controller,
-            onDetect: (capture) {
-              if (capture.barcodes.isEmpty) return;
-
-              final barcode = capture.barcodes.first;
-              final code = barcode.rawValue;
-
-              if (!_isProcessing && code != null && code.isNotEmpty) {
-                setState(() => _isDetecting = true);
-                developer.log('QR detected: $code', name: 'Scanner');
-                _processQRCode(code);
-              }
-            },
+            onDetect: _handleAutoDetect,
           ),
           _buildScannerOverlay(),
           if (_isProcessing)
@@ -308,27 +301,49 @@ class _ScannerScreenState extends State<ScannerScreen> {
                   tooltip: 'Scan from Gallery',
                   child: const Icon(Icons.photo_library),
                 ),
-                if (_showCaptureButton && !_isProcessing)
-                  FloatingActionButton.extended(
-                    heroTag: 'capture',
-                    onPressed: _captureAndScan,
-                    icon: const Icon(Icons.camera_alt),
-                    label: const Text('CAPTURE'),
-                  ),
+                // Fancy torch button with animation
+                ValueListenableBuilder(
+                  valueListenable: _controller.torchState,
+                  builder: (context, state, child) {
+                    return AnimatedContainer(
+                      duration: const Duration(milliseconds: 300),
+                      curve: Curves.easeInOut,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        boxShadow: [
+                          if (state == TorchState.on)
+                            BoxShadow(
+                              color: Colors.amber.withOpacity(0.8),
+                              blurRadius: 20,
+                              spreadRadius: 5,
+                            ),
+                        ],
+                      ),
+                      child: FloatingActionButton(
+                        heroTag: 'torch',
+                        onPressed: () => _controller.toggleTorch(),
+                        tooltip: 'Toggle Flash',
+                        backgroundColor: state == TorchState.on
+                            ? Colors.amber
+                            : Theme.of(context).primaryColor,
+                        child: Icon(
+                          state == TorchState.on
+                              ? Icons.flashlight_on_rounded
+                              : Icons.flashlight_off_rounded,
+                          color: state == TorchState.on
+                              ? Colors.black
+                              : Colors.white,
+                          size: 28,
+                        ),
+                      ),
+                    );
+                  },
+                ),
                 FloatingActionButton(
-                  heroTag: 'flash',
-                  onPressed: _controller.toggleTorch,
-                  tooltip: 'Toggle Flash',
-                  child: ValueListenableBuilder(
-                    valueListenable: _controller.torchState,
-                    builder: (context, state, child) {
-                      return Icon(
-                        state == TorchState.on
-                            ? Icons.flash_on
-                            : Icons.flash_off,
-                      );
-                    },
-                  ),
+                  heroTag: 'focus',
+                  onPressed: () => _controller.start(),
+                  tooltip: 'Auto Focus',
+                  child: const Icon(Icons.center_focus_strong),
                 ),
               ],
             ),
@@ -340,50 +355,27 @@ class _ScannerScreenState extends State<ScannerScreen> {
 
   Widget _buildScannerOverlay() {
     return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 300),
-            width: 250,
-            height: 250,
-            decoration: BoxDecoration(
-              border: Border.all(
-                color: _isDetecting
-                    ? Colors.green
-                    : Theme.of(context).primaryColor.withOpacity(0.8),
-                width: _isDetecting ? 4 : 2,
-              ),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: _isDetecting
-                ? const Center(
-                    child: Icon(
-                      Icons.check_circle,
-                      color: Colors.green,
-                      size: 60,
-                    ),
-                  )
-                : null,
+      child: Container(
+        width: 250,
+        height: 250,
+        decoration: BoxDecoration(
+          border: Border.all(
+            color: _isProcessing
+                ? Colors.blue
+                : Theme.of(context).primaryColor.withOpacity(0.8),
+            width: 2,
           ),
-          const SizedBox(height: 30),
-          Text(
-            _isDetecting
-                ? 'QR Code Detected!'
-                : 'Align QR code within the frame',
-            style: TextStyle(
-              color: _isDetecting ? Colors.green : Colors.white,
-              fontSize: 16,
-              fontWeight: _isDetecting ? FontWeight.bold : FontWeight.normal,
-              shadows: const [
-                Shadow(
-                  blurRadius: 10,
-                  color: Colors.black,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: _isProcessing
+            ? const Center(
+                child: Icon(
+                  Icons.check_circle,
+                  color: Colors.blue,
+                  size: 60,
                 ),
-              ],
-            ),
-          ),
-        ],
+              )
+            : null,
       ),
     );
   }

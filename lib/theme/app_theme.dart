@@ -6,6 +6,8 @@ class AppTheme {
   static const Color lightGray = Color(0xFFF5F5F5);
   static const Color mediumGray = Color(0xFFC0C0C0);
   static const Color limeGreen = Color(0xFFECF132);
+  static const Color darkGreen = Color(0xFF1C1C1C);
+  static const Color green = Color(0xFF00B74A);
   static const Color subtitleGray = Color(0xFF888888);
   static const Color iconGray = Color(0xFFA3A3B3);
   static const Color softShadow = Color.fromRGBO(0, 0, 0, 0.1);

@@ -13,9 +13,11 @@ class HistoryScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final historyProvider =
         Provider.of<HistoryProvider>(context, listen: false);
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       historyProvider.loadScans();
     });
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Scan History'),
@@ -26,18 +28,10 @@ class HistoryScreen extends StatelessWidget {
                   .setFilter(value);
             },
             itemBuilder: (context) => [
+              const PopupMenuItem(value: 'all', child: Text('Show All')),
+              const PopupMenuItem(value: 'valid', child: Text('Valid Only')),
               const PopupMenuItem(
-                value: 'all',
-                child: Text('Show All'),
-              ),
-              const PopupMenuItem(
-                value: 'valid',
-                child: Text('Valid Only'),
-              ),
-              const PopupMenuItem(
-                value: 'invalid',
-                child: Text('Invalid Only'),
-              ),
+                  value: 'invalid', child: Text('Invalid Only')),
             ],
           ),
         ],
@@ -45,38 +39,48 @@ class HistoryScreen extends StatelessWidget {
       body: Consumer<HistoryProvider>(
         builder: (context, provider, child) {
           if (provider.scans.isEmpty) {
-            return const Center(
-              child: Text('No scan history yet'),
-            );
+            return const Center(child: Text('No scan history yet'));
           }
 
-          final groupedScans = provider.groupedScans;
-          final dates = groupedScans.keys.toList()
-            ..sort((a, b) => b.compareTo(a));
+          final grouped = provider.groupedByBus;
+          final busNumbers = grouped.keys.toList()..sort();
 
           return ListView.builder(
-            itemCount: dates.length,
+            itemCount: busNumbers.length,
             itemBuilder: (context, index) {
-              final date = dates[index];
-              final scans = groupedScans[date]!;
+              final busNumber = busNumbers[index];
+              final tickets = grouped[busNumber]!;
+
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Padding(
+                  Container(
+                    width: double.infinity,
+                    color: AppTheme.lightGray,
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 8,
-                    ),
-                    child: Text(
-                      date,
-                      style:
-                          Theme.of(context).textTheme.headlineSmall?.copyWith(
-                                color: AppTheme.brightLime,
-                              ),
+                        horizontal: 16, vertical: 12),
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.directions_bus,
+                          color: AppTheme.almostBlack,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Bus: $busNumber',
+                          style:
+                              Theme.of(context).textTheme.titleMedium?.copyWith(
+                                    color: AppTheme.almostBlack,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 18,
+                                    fontFamily: 'RobotoMono',
+                                  ),
+                        ),
+                      ],
                     ),
                   ),
-                  ...scans
-                      .map((scan) => _buildScanItem(context, scan))
+                  ...tickets
+                      .map((ticket) => _buildScanItem(context, ticket))
                       .toList(),
                 ],
               );
@@ -99,13 +103,13 @@ class HistoryScreen extends StatelessWidget {
           padding: const EdgeInsets.all(8),
           decoration: BoxDecoration(
             color: scan.isValid
-                ? AppTheme.brightLime.withOpacity(0.2)
+                ? AppTheme.darkGreen.withOpacity(0.2)
                 : AppTheme.errorRed.withOpacity(0.2),
             shape: BoxShape.circle,
           ),
           child: Icon(
             scan.isValid ? Icons.verified : Icons.error_outline,
-            color: scan.isValid ? AppTheme.brightLime : AppTheme.errorRed,
+            color: scan.isValid ? AppTheme.green : AppTheme.errorRed,
           ),
         ),
         title: Text(
@@ -141,7 +145,7 @@ class HistoryScreen extends StatelessWidget {
           child: Text(
             scan.isValid ? 'VALID' : 'INVALID',
             style: TextStyle(
-              color: scan.isValid ? AppTheme.brightLime : AppTheme.errorRed,
+              color: scan.isValid ? AppTheme.green : AppTheme.errorRed,
               fontWeight: FontWeight.bold,
               fontSize: 12,
             ),

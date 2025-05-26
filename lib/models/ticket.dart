@@ -1,5 +1,4 @@
 import 'dart:convert';
-
 import 'package:intl/intl.dart';
 
 class Ticket {
@@ -12,6 +11,7 @@ class Ticket {
   final DateTime departureTime;
   final DateTime arrivalTime;
   bool isValid;
+  bool isAttended;
   final DateTime scanTime;
 
   Ticket({
@@ -23,7 +23,8 @@ class Ticket {
     required this.seats,
     required this.departureTime,
     required this.arrivalTime,
-    required this.isValid,
+    this.isValid = false,
+    this.isAttended = false,
     DateTime? scanTime,
   }) : scanTime = scanTime ?? DateTime.now();
 
@@ -41,19 +42,24 @@ class Ticket {
           : [json['Seat'] ?? 0]),
       departureTime: DateTime.parse(json['Departure_Time']),
       arrivalTime: DateTime.parse(json['Arrival_Time']),
-      isValid: true, // Default to true, will be updated after validation
+      isValid: json['Is_Valid'] ?? true,
+      isAttended: json['Is_Attended'] ?? false,
+      scanTime:
+          json['scanTime'] != null ? DateTime.parse(json['scanTime']) : null,
     );
   }
+
   factory Ticket.invalidWithError(String error) => Ticket(
         bookingId: 'INVALID',
         busNumber: 'INVALID',
         paymentReference: 'INVALID',
         fullPaymentInfo: {'error': error},
-        route: error, // ← use error as fallback
+        route: error,
         seats: [],
         departureTime: DateTime.now(),
         arrivalTime: DateTime.now(),
         isValid: false,
+        isAttended: false,
       );
 
   String get formattedDate => DateFormat('MMM dd, yyyy').format(scanTime);
@@ -66,6 +72,7 @@ class Ticket {
   String get formattedBusNumber => busNumber;
   String get formattedBookingId => bookingId;
   String get formattedPaymentReference => paymentReference;
+
   String get formattedFullPaymentInfo {
     final info = fullPaymentInfo;
     return '''
@@ -74,7 +81,7 @@ Email: ${info['email'] ?? 'N/A'}
 Amount: ${info['amount']} ${info['currency']}
 Status: ${info['status']?.toString().toUpperCase() ?? 'N/A'}
 Reference: ${info['reference'] ?? 'N/A'}
-Date: ${DateFormat('MMM dd, yyyy hh:mm a').format(DateTime.parse(info['created_at']))}
+Date: ${info['created_at'] != null ? DateFormat('MMM dd, yyyy hh:mm a').format(DateTime.parse(info['created_at'])) : 'N/A'}
 ''';
   }
 
@@ -90,7 +97,8 @@ Date: ${DateFormat('MMM dd, yyyy hh:mm a').format(DateTime.parse(info['created_a
         'Seat': seats,
         'Departure_Time': departureTime.toIso8601String(),
         'Arrival_Time': arrivalTime.toIso8601String(),
-        'isValid': isValid,
+        'Is_Valid': isValid,
+        'Is_Attended': isAttended,
         'scanTime': scanTime.toIso8601String(),
       };
 }
