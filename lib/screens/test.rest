@@ -1,0 +1,7 @@
+POST https://n7gjzkm4-3001.euw.devtunnels.ms/api/operator/login
+Content-Type: application/json
+
+{
+  "email": "yihunaashe@gmail.com",
+  "password": "Ay@&2704"
+}
